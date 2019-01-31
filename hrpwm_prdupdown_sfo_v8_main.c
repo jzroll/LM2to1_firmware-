@@ -63,18 +63,27 @@ Uint16 status;
 Uint16 adcEndOfConv = 0;
 Uint16 pwmStartConversion = 0;
 Uint16 newCommandLength = 0;
+Uint16 adc_delay_cycles=10;
+Uint16 update_adc_delay=0;
 int i = 0;
 
 float32 Kp = 0.001;
+float32 Kp1 = 0.001;
 float32 Ki = 0.0001;
-float32 K_scaling=36.6139;
-float32 eSumNorm = 0;
+float32 Ki1 = 0.0001;
+float32 K_scaling=0.0089;
+float32 K1_scaling=0.0044;
 float32 uOutTargetNorm = 2;//in V
+float32 u1OutTargetNorm = 2;//in V
 float32 uOutNorm=0;
 float32 uFbk=0;
+float32 u1Fbk=0;
 float32 u_i=0;
+float32 u1_i=0;
 float32 U_max=1;
-float32 U_min=-5;
+float32 U1_max=1;
+float32 U_min=-1;
+float32 U1_min=-1;
 
 Uint16 ISRTicker=0;
 float32 K1=0.998;
@@ -408,17 +417,24 @@ interrupt void adca0_isr(void)
 {
     GPIO_WritePin(DEBUG_PIN, 1);
 //    adcEndOfConv = 1;
-	uFbk = (float32) AdcbResultRegs.ADCRESULT0 *K_scaling / 4096;
+	uFbk = (float32) AdcbResultRegs.ADCRESULT0 *K_scaling;
+	u1Fbk = (float32) AdccResultRegs.ADCRESULT0 *K1_scaling;
+//	if(update_adc_delay==1){
+//	EPwm1Regs.CMPB.bit.CMPB+=adc_delay_cycles;
+//	update_adc_delay=0;
+//	}
   if(Vout_DC>0.1 && power==1){
 //	uFbk=uOutNorm*K_scaling;
 	uOutTargetNorm=Vout_DC;
 	float32 e = uOutTargetNorm - uFbk;
 	u_i += e*Ki;
-	 if (u_i > U_max) {
-	  u_i = U_max;
-	} else if (u_i < U_min) {
-	  u_i = U_min;
-	}
+//	 if (u_i > U_max) {
+//	  u_i = U_max;
+//	} else if (u_i < U_min) {
+//	  u_i = U_min;
+//	}
+	 u_i = (u_i >U_max) ? U_max : u_i;
+	 u_i= (u_i<U_min)? U_min:u_i;
 	float32 u_out=u_i+e*Kp;
 	 if (u_out > U_max) {
 	  u_out = U_max;
@@ -426,6 +442,24 @@ interrupt void adca0_isr(void)
 	  u_out = U_min;
 	}
 	phaseShiftPWM1to8=u_out;
+
+	u1OutTargetNorm=Vout1_DC;
+	float32 e1 = u1OutTargetNorm- u1Fbk;
+	u1_i += e1*Ki1;
+//	 if (u_i > U_max) {
+//	  u_i = U_max;
+//	} else if (u_i < U_min) {
+//	  u_i = U_min;
+//	}
+	 u1_i = (u1_i >U1_max) ? U1_max : u1_i;
+	 u1_i= (u1_i<U1_min)? U1_min:u1_i;
+	float32 u1_out=u1_i+e1*Kp1;
+	 if (u1_out > U1_max) {
+	  u1_out = U1_max;
+	} else if (u1_out < U1_min) {
+	  u1_out = U1_min;
+	}
+	phaseShiftPWM2to7=u1_out;
 	}
   else{
 	ISRTicker=0;
@@ -453,13 +487,14 @@ interrupt void DC_cal_isr(void)
 {   ISRTicker++;
 	if(ISRTicker<5000){
 	phaseShiftPWM1to8=0;
-	vout = (float32) AdcbResultRegs.ADCRESULT0 *K_scaling / 4096;
+	vout = (float32) AdcbResultRegs.ADCRESULT0 *K_scaling ;
 	Vout_DC=K1*temp+K2*vout;
     temp=Vout_DC;
 	phaseShiftPWM2to7=0;
-	vout1 = (float32) AdccResultRegs.ADCRESULT0 *K_scaling / 4096;
+	vout1 = (float32) AdccResultRegs.ADCRESULT0* K1_scaling;
 	Vout1_DC=K1*temp1+K2*vout1;
-    temp1=Vout1_DC;}
+    temp1=Vout1_DC;
+    }
    if (ISRTicker>20000){
 	EALLOW;  // This is needed to write to EALLOW protected registers
 	PieVectTable.ADCB1_INT = &adca0_isr;        //function for ADC-B interrupt 1
@@ -524,7 +559,7 @@ void HRPWM1_Config(period)
     EPwm1Regs.TBPRD = period;               // PWM frequency = 1/(2*TBPRD)
     EPwm1Regs.CMPA.bit.CMPA = period / 2;   // set duty 50% initially
     EPwm1Regs.CMPA.bit.CMPAHR = (1 << 8);   // initialize HRPWM extension
-    EPwm1Regs.CMPB.bit.CMPB = period / 2;   // set duty 50% initially
+    EPwm1Regs.CMPB.bit.CMPB = period / 2-adc_delay_cycles;   // set duty 50% initially
     EPwm1Regs.CMPB.all |= 1;                // ?????????????????
     EPwm1Regs.TBPHS.all = 0;                // value which is loaded into TBCTR when sinc puls occur
     EPwm1Regs.TBCTR = 0;                    // set counter to 0
