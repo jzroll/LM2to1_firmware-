@@ -30,7 +30,7 @@
 #define PWM_CH            9        // # of PWM channels
 
 //249 => 200kHz; 124 => 400kHz;333=>150kHz
-#define PWM_PERIOD_TICKS  333       //required -1!
+#define PWM_PERIOD_TICKS  334       //required -1!
 
 #define RX_BUFFER_SIZE 128
 #define TX_BUFFER_SIZE 128
@@ -80,8 +80,11 @@ Uint16 ISRTicker=0;
 float32 K1=0.998;
 float32 K2=0.002;
 float32 vout=0;
+float32 vout1=0;
 float32 Vout_DC=0;
+float32 Vout1_DC=0;
 float32 temp=0;
+float32 temp1=0;
 Uint16 power=0;
 
 
@@ -212,9 +215,9 @@ void main(void)
     EDIS;
     //PWM frequence EPWMCLK = 100MHz (maximum)
     HRPWM1_Config(PWM_PERIOD_TICKS);   // ePWMx target
-//    HRPWM2_Config(PWM_PERIOD_TICKS);   // ePWMx target
+    HRPWM2_Config(PWM_PERIOD_TICKS);   // ePWMx target
     HRPWM8_Config(PWM_PERIOD_TICKS);   // ePWMx target
-//    HRPWM4_Config(PWM_PERIOD_TICKS);   // ePWMx target
+    HRPWM7_Config(PWM_PERIOD_TICKS);   // ePWMx target
     EALLOW;
     CpuSysRegs.PCLKCR0.bit.TBCLKSYNC = 1;      // Enable TBCLK within the EPWM
     EPwm1Regs.TBCTL.bit.SWFSYNC = 1;          // Synchronize high resolution phase to start HR period
@@ -228,7 +231,7 @@ void main(void)
     ringbuffer_reset(&TXBufferStruct);
     ringbuffer_reset(&RXBufferStruct);
 
-
+    HRPWMupdatePhases(phaseShiftPWM1to8, phaseShiftPWM2to7);
     for(;;)
     {
 
@@ -346,7 +349,7 @@ void ConfigureADC(void)
     AdcaRegs.ADCSOC0CTL.bit.ACQPS = 14; //sample window is 100 SYSCLK cycles
 
     //trigger ADC by PWM1
-    AdcaRegs.ADCSOC0CTL.bit.TRIGSEL = 5; // ADCTRIG5 - ePWM1, ADCSOCA
+//    AdcaRegs.ADCSOC0CTL.bit.TRIGSEL = 5; // ADCTRIG5 - ePWM1, ADCSOCA
 
 
     // Setup the post-processing block 1 to be associated with SOC0 EOC0
@@ -376,6 +379,23 @@ void ConfigureADC(void)
     AdcSetMode(ADC_ADCB, ADC_RESOLUTION_12BIT, ADC_SIGNALMODE_SINGLE);
     AdcbRegs.ADCCTL1.bit.INTPULSEPOS = 0; //Set pulse positions to end of conversion
     AdcbRegs.ADCCTL1.bit.ADCPWDNZ = 1;    //power up the ADC
+
+    //Configure ADC C for input C2
+    //Configure start of conversion block 0 (SOC0) to pin A1 (Datasheet S.92, Figure 2-2)
+    AdccRegs.ADCSOC0CTL.bit.CHSEL = 2;  //SOC0 will convert pin B1
+    AdccRegs.ADCSOC0CTL.bit.ACQPS = 14; //sample window is 100 SYSCLK cycles
+    AdccRegs.ADCSOC0CTL.bit.TRIGSEL = 5; // ADCTRIG5 - ePWM1, ADCSOCA
+
+    // Setup the post-processing block 1 to be associated with SOC0 EOC0
+    AdccRegs.ADCPPB1CONFIG.bit.CONFIG = 0;
+
+    AdccRegs.ADCINTSEL1N2.bit.INT1SEL = 0; //end of SOC0 will set INT1 flag
+    AdccRegs.ADCINTSEL1N2.bit.INT1E = 1;   //enable INT1 flag
+
+    AdccRegs.ADCCTL2.bit.PRESCALE = 6; //set ADCCLK divider to /4, Max ADCCLK is 50MHz -> /4
+    AdcSetMode(ADC_ADCC, ADC_RESOLUTION_12BIT, ADC_SIGNALMODE_SINGLE);
+    AdccRegs.ADCCTL1.bit.INTPULSEPOS = 0; //Set pulse positions to end of conversion
+    AdccRegs.ADCCTL1.bit.ADCPWDNZ = 1;    //power up the ADC
 
     DELAY_US(1000); //delay for 1ms to allow ADC time to power up
     EDIS;
@@ -435,7 +455,11 @@ interrupt void DC_cal_isr(void)
 	phaseShiftPWM1to8=0;
 	vout = (float32) AdcbResultRegs.ADCRESULT0 *K_scaling / 4096;
 	Vout_DC=K1*temp+K2*vout;
-    temp=Vout_DC;}
+    temp=Vout_DC;
+	phaseShiftPWM2to7=0;
+	vout1 = (float32) AdccResultRegs.ADCRESULT0 *K_scaling / 4096;
+	Vout1_DC=K1*temp1+K2*vout1;
+    temp1=Vout1_DC;}
    if (ISRTicker>20000){
 	EALLOW;  // This is needed to write to EALLOW protected registers
 	PieVectTable.ADCB1_INT = &adca0_isr;        //function for ADC-B interrupt 1
@@ -457,20 +481,20 @@ void HRPWMupdatePhases(float32 Phi, float32 dPhi)
     EPwm8Regs.CMPA.bit.CMPAHR = phaseShiftMEP1_3 <<8;
     EPwm8Regs.CMPB.bit.CMPBHR = phaseShiftMEP1_3 <<8;
 
-    float32 phi1_4 = Phi + dPhi;
-    if(phi1_4 < 0)
-    {
-        phi1_4 = 0;
-    }
+    float32 phi1_4 = dPhi;
+//    if(phi1_4 < 0)
+//    {
+//        phi1_4 = 0;
+//    }
 
-    float32 phaseShift1_4 = PWM_PERIOD_TICKS/2 + 2*PWM_PERIOD_TICKS/100.0 * phi1_4 -1;
+    float32 phaseShift1_4 = PWM_PERIOD_TICKS/2 + 2*PWM_PERIOD_TICKS/100.0 * phi1_4 ;
     float32 phaseShift1_4_main = floor(phaseShift1_4);
     float32 phaseShift1_4_rest = phaseShift1_4 - phaseShift1_4_main;
     int16 phaseShiftMEP1_4 = 255 * phaseShift1_4_rest;
 
-    EPwm4Regs.CMPA.bit.CMPA = phaseShift1_4_main;
-    EPwm4Regs.CMPA.bit.CMPAHR = phaseShiftMEP1_4 <<8;
-    EPwm4Regs.CMPB.bit.CMPBHR = phaseShiftMEP1_4 <<8;
+    EPwm7Regs.CMPA.bit.CMPA = phaseShift1_4_main;
+    EPwm7Regs.CMPA.bit.CMPAHR = phaseShiftMEP1_4 <<8;
+    EPwm7Regs.CMPB.bit.CMPBHR = phaseShiftMEP1_4 <<8;
 }
 
 void HRPWMupdateDB(int DB)
@@ -498,9 +522,9 @@ void HRPWM1_Config(period)
 {
     EPwm1Regs.TBCTL.bit.PRDLD = TB_SHADOW;  // set Shadow load
     EPwm1Regs.TBPRD = period;               // PWM frequency = 1/(2*TBPRD)
-    EPwm1Regs.CMPA.bit.CMPA = (period+1) / 2;   // set duty 50% initially
+    EPwm1Regs.CMPA.bit.CMPA = period / 2;   // set duty 50% initially
     EPwm1Regs.CMPA.bit.CMPAHR = (1 << 8);   // initialize HRPWM extension
-    EPwm1Regs.CMPB.bit.CMPB = (period+1) / 2;   // set duty 50% initially
+    EPwm1Regs.CMPB.bit.CMPB = period / 2;   // set duty 50% initially
     EPwm1Regs.CMPB.all |= 1;                // ?????????????????
     EPwm1Regs.TBPHS.all = 0;                // value which is loaded into TBCTR when sinc puls occur
     EPwm1Regs.TBCTR = 0;                    // set counter to 0
@@ -526,7 +550,7 @@ void HRPWM1_Config(period)
     //EPwm1Regs.AQCTLB.bit.CBD = AQ_SET;
 
     //configure SOC for ADC A
-    EPwm1Regs.ETSEL.bit.SOCASEL =  0x4;             //100: Enable event time-base counter equal to CMPA when the timer
+    EPwm1Regs.ETSEL.bit.SOCASEL =  0x6;             //100: Enable event time-base counter equal to CMPA when the timer
                                                     //is incrementing or CMPC when the timer is incrementing
 //    EPwm1Regs.ETSEL.bit.INTSEL = 0x4;               //Enable event time-base counter equal to CMPA when the timer
 //                                                    //is incrementing or CMPC when the timer is incrementing
@@ -562,9 +586,9 @@ void HRPWM2_Config(period)
 {
     EPwm2Regs.TBCTL.bit.PRDLD = TB_SHADOW;  // set Shadow load
     EPwm2Regs.TBPRD = period;               // PWM frequency = 1/(2*TBPRD)
-    EPwm2Regs.CMPA.bit.CMPA = period / 2 -1;   // set duty 50% initially
+    EPwm2Regs.CMPA.bit.CMPA = period / 2 ;   // set duty 50% initially
     EPwm2Regs.CMPA.bit.CMPAHR = (1 << 8);   // initialize HRPWM extension
-    EPwm2Regs.CMPB.bit.CMPB = period / 2 +1;   // set duty 50% initially
+    EPwm2Regs.CMPB.bit.CMPB = period / 2 ;   // set duty 50% initially
     EPwm2Regs.CMPB.all |= 1;                // ?????????????????
     EPwm2Regs.TBPHS.all = 0;                // value which is loaded into TBCTR when sinc puls occur
     EPwm2Regs.TBCTR = 0;                    // set counter to 0
@@ -657,31 +681,31 @@ void HRPWM8_Config(period)
     EDIS;
 }
 
-void HRPWM4_Config(period)
+void HRPWM7_Config(period)
 {
-    EPwm4Regs.TBCTL.bit.PRDLD = TB_SHADOW;  // set Shadow load
-    EPwm4Regs.TBPRD = period;               // PWM frequency = 1/(2*TBPRD)
-    EPwm4Regs.CMPA.bit.CMPA = period / 2;   // set duty 50% initially
-    EPwm4Regs.CMPA.bit.CMPAHR = (1 << 8);   // initialize HRPWM extension
-    EPwm4Regs.CMPB.bit.CMPB = period / 2;   // set duty 50% initially
-    EPwm4Regs.CMPB.all |= 1;                // ?????????????????
-    EPwm4Regs.TBPHS.all = 0;                // value which is loaded into TBCTR when sinc puls occur
-    EPwm4Regs.TBCTR = 0;                    // set counter to 0
+    EPwm7Regs.TBCTL.bit.PRDLD = TB_SHADOW;  // set Shadow load
+    EPwm7Regs.TBPRD = period;               // PWM frequency = 1/(2*TBPRD)
+    EPwm7Regs.CMPA.bit.CMPA = period / 2;   // set duty 50% initially
+    EPwm7Regs.CMPA.bit.CMPAHR = (1 << 8);   // initialize HRPWM extension
+    EPwm7Regs.CMPB.bit.CMPB = period / 2;   // set duty 50% initially
+    EPwm7Regs.CMPB.all |= 1;                // ?????????????????
+    EPwm7Regs.TBPHS.all = 0;                // value which is loaded into TBCTR when sinc puls occur
+    EPwm7Regs.TBCTR = 0;                    // set counter to 0
 
-    EPwm4Regs.TBCTL.bit.CTRMODE = TB_COUNT_UP; // Select up-down count mode
-    EPwm4Regs.TBCTL.bit.PHSEN = TB_ENABLE;         // to synchronize from EXTSYNCIN1
-    EPwm4Regs.TBCTL.bit.SYNCOSEL = TB_SYNC_IN;     //sync feed trough to PWM2
-    EPwm4Regs.TBCTL.bit.HSPCLKDIV = TB_DIV1;
-    EPwm4Regs.TBCTL.bit.CLKDIV = TB_DIV1;          // TBCLK = SYSCLKOUT
-    EPwm4Regs.TBCTL.bit.FREE_SOFT = 11;
+    EPwm7Regs.TBCTL.bit.CTRMODE = TB_COUNT_UP; // Select up-down count mode
+    EPwm7Regs.TBCTL.bit.PHSEN = TB_ENABLE;         // to synchronize from EXTSYNCIN1
+    EPwm7Regs.TBCTL.bit.SYNCOSEL = TB_SYNC_IN;     //sync feed trough to PWM2
+    EPwm7Regs.TBCTL.bit.HSPCLKDIV = TB_DIV1;
+    EPwm7Regs.TBCTL.bit.CLKDIV = TB_DIV1;          // TBCLK = SYSCLKOUT
+    EPwm7Regs.TBCTL.bit.FREE_SOFT = 11;
 
-    EPwm4Regs.CMPCTL.bit.LOADAMODE = CC_CTR_ZERO;  // LOAD CMPA on CTR = 0
-    EPwm4Regs.CMPCTL.bit.LOADBMODE = CC_CTR_ZERO;
-    EPwm4Regs.CMPCTL.bit.SHDWAMODE = CC_SHADOW;
-    EPwm4Regs.CMPCTL.bit.SHDWBMODE = CC_SHADOW;
+    EPwm7Regs.CMPCTL.bit.LOADAMODE = CC_CTR_ZERO;  // LOAD CMPA on CTR = 0
+    EPwm7Regs.CMPCTL.bit.LOADBMODE = CC_CTR_ZERO;
+    EPwm7Regs.CMPCTL.bit.SHDWAMODE = CC_SHADOW;
+    EPwm7Regs.CMPCTL.bit.SHDWBMODE = CC_SHADOW;
 
 
-    EPwm4Regs.AQCTLA.bit.CAU = AQ_TOGGLE;             // PWM toggle high/low
+    EPwm7Regs.AQCTLA.bit.CAU = AQ_TOGGLE;             // PWM toggle high/low
   //  EPwm4Regs.AQCTLA.bit.CBD = AQ_CLEAR;
     //EPwm4Regs.AQCTLB.bit.CAU = AQ_CLEAR;         //PWM_B generated throu DB module
     //EPwm4Regs.AQCTLB.bit.CBD = AQ_SET;
@@ -689,26 +713,26 @@ void HRPWM4_Config(period)
     //
     // Active Low PWMs - Setup Deadband
     //
-    EPwm4Regs.DBCTL.bit.IN_MODE = DBA_ALL;
-    EPwm4Regs.DBCTL.bit.POLSEL = DB_ACTV_HIC;
-    EPwm4Regs.DBCTL.bit.OUT_MODE = DB_FULL_ENABLE;
-    EPwm4Regs.DBCTL.bit.HALFCYCLE = 1;
+    EPwm7Regs.DBCTL.bit.IN_MODE = DBA_ALL;
+    EPwm7Regs.DBCTL.bit.POLSEL = DB_ACTV_HIC;
+    EPwm7Regs.DBCTL.bit.OUT_MODE = DB_FULL_ENABLE;
+    EPwm7Regs.DBCTL.bit.HALFCYCLE = 1;
 
-    EPwm4Regs.DBRED.bit.DBRED = deadBand;
-    EPwm4Regs.DBFED.bit.DBFED = deadBand;
+    EPwm7Regs.DBRED.bit.DBRED = deadBand;
+    EPwm7Regs.DBFED.bit.DBFED = deadBand;
 
     EALLOW;
-    EPwm4Regs.HRCNFG.all = 0x0;
-    EPwm4Regs.HRCNFG.bit.EDGMODE = HR_BEP;          // Rising on A
-    EPwm4Regs.HRCNFG.bit.EDGMODEB = HR_BEP;         // Falling on B
-    EPwm4Regs.HRCNFG.bit.CTLMODE = HR_CMP;          // CMPAHR and TBPRDHR HR control
-    EPwm4Regs.HRCNFG.bit.CTLMODEB = HR_CMP;          // CMPBHR and TBPRDHR HR control
-    EPwm4Regs.HRCNFG.bit.HRLOAD  = HR_CTR_ZERO_PRD; // load on CTR = 0 and CTR = TBPRD
-    EPwm4Regs.HRCNFG.bit.HRLOADB  = HR_CTR_ZERO_PRD; // load on CTR = 0 and CTR = TBPRD
+    EPwm7Regs.HRCNFG.all = 0x0;
+    EPwm7Regs.HRCNFG.bit.EDGMODE = HR_BEP;          // Rising on A
+    EPwm7Regs.HRCNFG.bit.EDGMODEB = HR_BEP;         // Falling on B
+    EPwm7Regs.HRCNFG.bit.CTLMODE = HR_CMP;          // CMPAHR and TBPRDHR HR control
+    EPwm7Regs.HRCNFG.bit.CTLMODEB = HR_CMP;          // CMPBHR and TBPRDHR HR control
+    EPwm7Regs.HRCNFG.bit.HRLOAD  = HR_CTR_ZERO_PRD; // load on CTR = 0 and CTR = TBPRD
+    EPwm7Regs.HRCNFG.bit.HRLOADB  = HR_CTR_ZERO_PRD; // load on CTR = 0 and CTR = TBPRD
  //   EPwm4Regs.HRCNFG.bit.SWAPAB = 1;
-    EPwm4Regs.HRCNFG.bit.AUTOCONV = 1;              // Enable autoconversion for HR period
-    EPwm4Regs.HRPCTL.bit.TBPHSHRLOADE = 1;          // Enable TBPHSHR sync (required for updwn count HR control)
-    EPwm4Regs.HRPCTL.bit.HRPE = 1;                  // Turn on high-resolution period control.
+    EPwm7Regs.HRCNFG.bit.AUTOCONV = 1;              // Enable autoconversion for HR period
+    EPwm7Regs.HRPCTL.bit.TBPHSHRLOADE = 1;          // Enable TBPHSHR sync (required for updwn count HR control)
+    EPwm7Regs.HRPCTL.bit.HRPE = 1;                  // Turn on high-resolution period control.
     EDIS;
 }
 
